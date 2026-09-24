@@ -1,0 +1,48 @@
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  background: #030507;
+  color: #dce7f0;
+  font-family: Arial, sans-serif;
+  overflow: hidden;
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+canvas {
+  display: block;
+}
+
+.hud {
+  position: absolute;
+  left: 16px;
+  top: 12px;
+  right: 16px;
+  pointer-events: none;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.stats {
+  margin-top: 6px;
+  font-size: 14px;
+}
+
+.bottom {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  font-family: monospace;
+  pointer-events: none;
+}
