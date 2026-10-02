@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .env import OBS_DIM
 from .ppo import PPO
 
 # (team, checkpoint stem) -- must match train.py's checkpoint names.
@@ -58,7 +59,12 @@ class PolicyRuntime:
         return len(self.policies) == len(TEAM_POLICIES)
 
     def load(self) -> dict:
-        """(Re)load checkpoints from disk. Never raises; returns a status."""
+        """(Re)load checkpoints from disk. Never raises; returns a status.
+
+        Checkpoints whose observation dimension does not match the
+        current WarEnv construction are refused explicitly (old-format
+        files must fail loudly per checkpoint, not mis-read silently):
+        the affected faction falls back to the engine default behavior."""
         self.policies.clear()
         errors: dict[str, str] = {}
         for team, name in TEAM_POLICIES:
@@ -67,7 +73,15 @@ class PolicyRuntime:
                 errors[name] = f"missing: {path}"
                 continue
             try:
-                self.policies[team] = PPO.load(str(path), device=self.device)
+                ppo = PPO.load(str(path), device=self.device)
+                if ppo.obs_dim != OBS_DIM:
+                    errors[name] = (
+                        f"obs_dim {ppo.obs_dim} != current {OBS_DIM}: "
+                        "checkpoint predates the macro observation block "
+                        "(option C); retrain before serving"
+                    )
+                    continue
+                self.policies[team] = ppo
             except Exception as exc:  # corrupted / incompatible file
                 errors[name] = repr(exc)
         return {

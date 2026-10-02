@@ -15,10 +15,16 @@ Curriculum (anti-deathball):
       with -- and learn to exploit -- structured deployments
     * league play: with probability --league-prob an episode pits one
       learning faction against a scripted opponent from
-      war_sim.scripted (hold/blob/line/flank); the scripted faction's
-      units act but contribute no trajectories. Fixed diverse opponents
-      keep self-play from collapsing into one symmetric deathball
-      equilibrium, and give a measurable win-rate bar per opponent.
+      war_sim.scripted (hold/blob/line/flank/command); the scripted
+      faction's units act but contribute no trajectories. Fixed diverse
+      opponents keep self-play from collapsing into one symmetric
+      deathball equilibrium, and give a measurable win-rate bar per
+      opponent.
+    * option C: every learning faction gets a Commander with a random
+      doctrine per episode (line/column/wedge/echelon/crescent); its
+      live slot targets enter the observations and drive the slot
+      shaping reward. Scripted league opponents get no commander --
+      only the learning side trains under macro context.
 
 Test the simulator first with:
     python run_sim.py
@@ -39,19 +45,24 @@ import numpy as np
 import torch
 
 from war_sim.core import BattleConfig, FORMATION_NAMES
+from war_sim.commander import Commander
 from war_sim.env import N_ACTIONS, OBS_DIM, WarEnv
 from war_sim.ppo import PPO, PPOParams, Trajectory
 from war_sim.scripted import SCRIPTED_POLICIES
 
 N_UNITS_PER_SIDE = 50
 MAX_STEPS = 600
-N_ENVS = 2  # independent battles collected per iteration
+N_ENVS = 2            # independent battles collected per iteration
 SEED = 42
-LEAGUE_PROB = 0.5  # chance an episode is league (vs scripted) play
+LEAGUE_PROB = 0.5     # chance an episode is league (vs scripted) play
 CHECKPOINT_DIR = os.environ.get("WAR_CHECKPOINT_DIR", "./checkpoints/war_100")
 
 # Deployment formations sampled per team per episode (curriculum variety).
 FORMATION_POOL = ("scatter", *FORMATION_NAMES[1:])
+
+# Commander doctrines sampled per learning faction per episode
+# (option C; scatter is spawn-only, it has no slot grid).
+COMMANDER_POOL = FORMATION_NAMES[1:]
 
 
 def team_of(agent_id: str) -> int:
@@ -66,6 +77,7 @@ def run_episode(
     opponent_name: str | None = None,
     opponent_team: int | None = None,
     deterministic: bool = False,
+    commanders: tuple | None = None,
 ):
     """Play one full battle with the current policies.
 
@@ -73,12 +85,15 @@ def run_episode(
     scripted policy (no trajectories collected for it) and only the
     other faction learns this episode.
 
+    commanders: optional (blue, red) Commander attachment for this
+    episode (option C macro context; entries may be None).
+
     Returns (per-agent trajectories of the learning faction(s), stats).
     """
     opponent = SCRIPTED_POLICIES[opponent_name] if opponent_name else None
     learn_teams = (0, 1) if opponent is None else (1 - opponent_team,)
 
-    obs = env.reset(seed=seed, formations=formations)
+    obs = env.reset(seed=seed, formations=formations, commanders=commanders)
     trajectories = {a: Trajectory() for a in obs if team_of(a) in learn_teams}
     ended_by_truncation = False
 
@@ -118,9 +133,7 @@ def run_episode(
         if env.episode_done:
             for a, o in obs.items():
                 if a in trajectories and a not in dead:
-                    trajectories[a].bootstrap_value = policies[team_of(a)].model.value(
-                        o
-                    )
+                    trajectories[a].bootstrap_value = policies[team_of(a)].model.value(o)
 
     blue, red = env.alive_counts()
     winner = 0 if (red == 0 and blue > 0) else (1 if (blue == 0 and red > 0) else -1)
@@ -138,33 +151,27 @@ def run_episode(
         "opponent": opponent_name,
         "opponent_team": opponent_team,
         "formations": formations,
+        "doctrines": (
+            tuple(c.formation if c else None for c in commanders)
+            if commanders else None
+        ),
     }
     return trajectories, stats
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PPO training for the war simulator")
-    p.add_argument(
-        "--iters",
-        type=int,
-        default=int(os.environ.get("WAR_TRAIN_ITERS", "50")),
-        help="training iterations (env: WAR_TRAIN_ITERS)",
-    )
-    p.add_argument(
-        "--envs", type=int, default=N_ENVS, help="battles collected per iteration"
-    )
-    p.add_argument(
-        "--n-units", type=int, default=N_UNITS_PER_SIDE, help="units per side"
-    )
-    p.add_argument(
-        "--max-steps", type=int, default=MAX_STEPS, help="step limit per episode"
-    )
-    p.add_argument(
-        "--league-prob",
-        type=float,
-        default=LEAGUE_PROB,
-        help="probability an episode is played vs a scripted opponent",
-    )
+    p.add_argument("--iters", type=int,
+                   default=int(os.environ.get("WAR_TRAIN_ITERS", "50")),
+                   help="training iterations (env: WAR_TRAIN_ITERS)")
+    p.add_argument("--envs", type=int, default=N_ENVS,
+                   help="battles collected per iteration")
+    p.add_argument("--n-units", type=int, default=N_UNITS_PER_SIDE,
+                   help="units per side")
+    p.add_argument("--max-steps", type=int, default=MAX_STEPS,
+                   help="step limit per episode")
+    p.add_argument("--league-prob", type=float, default=LEAGUE_PROB,
+                   help="probability an episode is played vs a scripted opponent")
     p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--checkpoint-dir", default=CHECKPOINT_DIR)
     return p.parse_args()
@@ -187,7 +194,8 @@ def main():
     print(
         f"standalone PPO: {args.n_units} units/side, max_steps={args.max_steps}, "
         f"envs={args.envs}, iters={args.iters}, seed={args.seed}, "
-        f"league_prob={args.league_prob}"
+        f"league_prob={args.league_prob}, obs_dim={OBS_DIM} (macro block incl.), "
+        f"doctrines sampled from {COMMANDER_POOL}"
     )
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -217,21 +225,29 @@ def main():
                 rng.choice(FORMATION_POOL),
                 rng.choice(FORMATION_POOL),
             )
+            # Option C: a fresh doctrine per learning faction per episode
+            # (the scripted league side gets no commander).
+            if opponent_name is None:
+                commanders = (Commander(rng.choice(COMMANDER_POOL)),
+                              Commander(rng.choice(COMMANDER_POOL)))
+            else:
+                learner = 1 - opponent_team
+                c = Commander(rng.choice(COMMANDER_POOL))
+                commanders = (c, None) if learner == 0 else (None, c)
             ep_trajs, s = run_episode(
-                env,
-                policies,
+                env, policies,
                 seed=rng.randrange(2**31),
                 formations=formations,
                 opponent_name=opponent_name,
                 opponent_team=opponent_team,
+                commanders=commanders,
             )
             for a, t in ep_trajs.items():
                 trajs[team_of(a)].append(t)
                 agent_steps += len(t)
             ep_stats.append(s)
             matchups.append(
-                "self"
-                if opponent_name is None
+                "self" if opponent_name is None
                 else f"{opponent_name}@{'BR'[opponent_team]}"
             )
             wins[s["winner"]] += 1
@@ -240,20 +256,17 @@ def main():
                 learner = 1 - opponent_team
                 row = league[opponent_name]
                 row[0 if s["winner"] == learner else 1 if s["winner"] >= 0 else 2] += 1
-        # upd = {team: policies[team].update(trajs[team]) for team in (0, 1)}
-        # FIXBUG: 如果某一次迭代里,3 局全部是 league 局、且脚本对手恰好都坐在同一队,那么另一队整轮 0 条轨迹
-        #          → np.concatenate([]) → ValueError: need at least one array to concatenate。
-        upd = {}
-        for team in (0, 1):
-            if trajs[team]:
-                upd[team] = policies[team].update(trajs[team])
-            else:
-                upd[team] = {
-                    "approx_kl": 0.0,
-                    "entropy": 0.0,
-                    "pi_loss": 0.0,
-                    "v_loss": 0.0,
-                }
+
+        # A league episode only produces trajectories for the learning
+        # faction; with few envs an iteration can leave one faction with
+        # nothing to learn from (latent bug, exposed by --envs 1).
+        empty = {"pi_loss": 0.0, "v_loss": 0.0, "entropy": 0.0,
+                 "approx_kl": 0.0, "clip_frac": 0.0}
+        upd = {
+            team: (policies[team].update(trajs[team]) if trajs[team]
+                   else dict(empty))
+            for team in (0, 1)
+        }
         wall = time.perf_counter() - t0
 
         blue_ret = float(np.mean([s["blue_return"] for s in ep_stats]))
@@ -274,15 +287,16 @@ def main():
             flush=True,
         )
         if (it + 1) % 10 == 0:
-            table = " ".join(f"{n}:{w}/{l}/{d}" for n, (w, l, d) in league.items())
+            table = " ".join(
+                f"{n}:{w}/{l}/{d}" for n, (w, l, d) in league.items()
+            )
             print(f"        league (W/L/D vs scripted): {table}", flush=True)
             save_checkpoints()
 
     save_checkpoints()
     for team, name in ((0, "blue_policy"), (1, "red_policy")):
-        print(
-            f"checkpoint saved to " f"{os.path.join(args.checkpoint_dir, f'{name}.pt')}"
-        )
+        print(f"checkpoint saved to "
+              f"{os.path.join(args.checkpoint_dir, f'{name}.pt')}")
 
 
 if __name__ == "__main__":

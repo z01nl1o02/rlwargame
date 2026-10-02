@@ -8,6 +8,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from war_sim.core import BattleConfig
+from war_sim.commander import Commander
 from war_sim.env import WarEnv
 from war_sim.recorder import ReplayRecorder
 from war_sim.runtime import PolicyRuntime
@@ -16,7 +17,10 @@ from war_sim.runtime import PolicyRuntime
 # WarEnv wraps BattleSimulator: identical combat rules, plus the exact
 # observation construction the policies were trained on. state_dict() is
 # delegated to the simulator, so the frontend contract is unchanged.
-env = WarEnv(BattleConfig(), seed=42)
+# Option C: each faction gets a Commander (line doctrine) so serving sees
+# the same macro observation block as training -- same env, same code path.
+env = WarEnv(BattleConfig(), seed=42,
+             commanders=(Commander("line"), Commander("line")))
 
 ai = PolicyRuntime()
 ai_info: dict = {"ready": False, "loaded": [], "errors": {}, "checkpoint_dir": ""}

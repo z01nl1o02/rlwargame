@@ -16,10 +16,18 @@ team is alive):
 
 For reference, the same metrics are printed for the scripted `blob`
 policy -- the behavior this whole effort trains the policies out of.
+For factions evaluated with a commander (option C), slot_d reports the
+mean distance from the units to their live slot targets during the
+advance phase (slot keeping: lower = tighter formation following).
 
-Matchups (N episodes each, random initial formations per episode):
+Matchups (N episodes each, random initial formations and commander
+doctrines per episode):
     blue_policy vs red_policy          (self-play mirror)
     each policy vs each scripted opponent, on its own side
+    [ablation] one policy without its commander macro block -- the
+    observation is then off-distribution (the all-zero phase one-hot),
+    which measures how much the policy actually relies on the macro
+    context
 
 Usage:
     cd backend
@@ -32,6 +40,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import random
 from dataclasses import dataclass, field
@@ -39,12 +48,16 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from war_sim.core import BattleConfig, FORMATION_NAMES
+from war_sim.commander import Commander
 from war_sim.env import WarEnv
 from war_sim.recorder import ReplayRecorder
 from war_sim.runtime import PolicyRuntime, team_of
 from war_sim.scripted import SCRIPTED_POLICIES
 
 FORMATION_POOL = ("scatter", *FORMATION_NAMES[1:])
+# Commander doctrines sampled per evaluated faction per episode
+# (matches the training distribution; see train.COMMANDER_POOL).
+COMMANDER_POOL = FORMATION_NAMES[1:]
 
 
 # ----------------------------------------------------------------------
@@ -56,6 +69,7 @@ class MetricAccumulator:
     spread: list = field(default_factory=list)    # radial std from centroid
     hull_per_unit: list = field(default_factory=list)
     allies60: list = field(default_factory=list)
+    slot_d: list = field(default_factory=list)    # distance to live slot (advance)
 
     def add(self, units) -> None:
         if len(units) < 2:
@@ -75,12 +89,13 @@ class MetricAccumulator:
 
     def summary(self) -> dict:
         def m(vals):
-            return float(np.mean(vals)) if vals else 0.0
+            return float(np.mean(vals)) if vals else None
         return {
             "spacing": m(self.spacing),
             "spread": m(self.spread),
             "hull/u": m(self.hull_per_unit),
             "allies60": m(self.allies60),
+            "slot_d": m(self.slot_d),
         }
 
 
@@ -117,13 +132,28 @@ def _hull_area(xs: np.ndarray, ys: np.ndarray) -> float | None:
 # ----------------------------------------------------------------------
 def play_episode(
     env: WarEnv,
-    controllers: dict,          # team -> ("ppo", PolicyRuntime-policies) | ("scripted", name)
+    controllers: dict,   # team -> ("ppo"|"ppo-nomacro"|"scripted", ctrl)
     seed: int,
     formations: tuple[str, str],
     metrics: dict | None = None,  # team -> MetricAccumulator (sampled live)
     recorder: ReplayRecorder | None = None,
 ):
-    obs = env.reset(seed=seed, formations=formations)
+    """Play one episode. Controller kinds:
+
+      "ppo"         trained policy + Commander macro context (the
+                    observations match training: a random doctrine is
+                    sampled per episode from COMMANDER_POOL)
+      "ppo-nomacro" same policy, no commander attached -- ablation for
+                    how much the policy relies on the macro block
+      "scripted"    a war_sim.scripted policy (reads the sim state)
+    """
+    rng = random.Random(seed)
+    commanders = {}
+    for team, (kind, _ctrl) in controllers.items():
+        if kind == "ppo":
+            commanders[team] = Commander(rng.choice(COMMANDER_POOL))
+    obs = env.reset(seed=seed, formations=formations,
+                    commanders=(commanders.get(0), commanders.get(1)))
     if recorder is not None:
         recorder.start(env.sim, source="evaluate")
 
@@ -149,6 +179,17 @@ def play_episode(
         if metrics is not None and env.sim.step_count >= 50 \
                 and env.sim.step_count % 10 == 0:
             for team in (0, 1):
+                cmd = env.commanders.get(team)
+                if cmd is not None:  # slot keeping (advance phase only)
+                    order = cmd.order(env, team)
+                    if order["phase"] == "advance":
+                        slots = order["slots"]
+                        ds = [
+                            math.hypot(u.x - slots[u.id][0], u.y - slots[u.id][1])
+                            for u in env.sim.living(team) if u.id in slots
+                        ]
+                        if ds:
+                            metrics[team].slot_d.append(sum(ds) / len(ds))
                 living = env.sim.living(team)
                 if len(living) >= max(3, int(0.3 * env.cfg.n_units_per_side)):
                     metrics[team].add(living)
@@ -162,7 +203,7 @@ def play_episode(
 
 def run_matchup(env, controllers, n_episodes, base_seed, formations=None):
     rng = random.Random(base_seed)
-    w = l = d = 0
+    wins = {0: 0, 1: 0, -1: 0}
     alive = {t: [] for t in controllers}
     acc = {t: MetricAccumulator() for t in controllers}
     flank_share = {t: [] for t in controllers}
@@ -181,15 +222,12 @@ def run_matchup(env, controllers, n_episodes, base_seed, formations=None):
             flank_share[t].append(
                 env.sim.flank_hits_by_team[t] / hits if hits else 0.0
             )
-        # result from team 0's perspective
-        if winner == 0:
-            w += 1
-        elif winner == 1:
-            l += 1
-        else:
-            d += 1
+        wins[winner] += 1
     return {
-        "w": w, "l": l, "d": d,
+        # per-slot win counts: each printed row reads W-L-D from ITS OWN
+        # side (the old fixed team-0 perspective inverted every
+        # red_policy row relative to its label)
+        "wins": wins,
         "alive": {t: float(np.mean(alive[t])) for t in controllers},
         "metrics": {t: acc[t].summary() for t in controllers},
         "flank%": {t: 100.0 * float(np.mean(flank_share[t])) for t in controllers},
@@ -198,11 +236,17 @@ def run_matchup(env, controllers, n_episodes, base_seed, formations=None):
 
 def fmt_row(name, res, team, n_units):
     m = res["metrics"][team]
-    return (f"{name:<34s} {res['w']:2d}-{res['l']:2d}-{res['d']:2d} "
+    w, l, d = res["wins"][team], res["wins"][1 - team], res["wins"][-1]
+
+    def f(key, width, prec):
+        v = m[key]
+        return f"{v:{width}.{prec}f}" if v is not None else " " * (width - 1) + "-"
+
+    return (f"{name:<34s} {w:2d}-{l:2d}-{d:2d} "
             f"{res['alive'][team]:6.1f} "
-            f"{m['spacing']:7.1f} {m['spread']:7.1f} "
-            f"{m['hull/u']:8.0f} {m['allies60']:7.1f} "
-            f"{res['flank%'][team]:6.1f}")
+            f"{f('spacing', 7, 1)} {f('spread', 7, 1)} "
+            f"{f('hull/u', 8, 0)} {f('allies60', 7, 1)} "
+            f"{res['flank%'][team]:6.1f} {f('slot_d', 6, 1)}")
 
 
 def parse_args():
@@ -240,7 +284,7 @@ def main():
 
     header = (f"{'matchup (policy side first)':<34s} {'W-L-D':>8s} {'alive':>6s} "
               f"{'space':>7s} {'spread':>7s} {'hull/u':>8s} {'ally60':>7s} "
-              f"{'flank%':>6s}")
+              f"{'flank%':>6s} {'slot_d':>6s}")
     print(f"\n{args.episodes} episodes/matchup, n={args.n_units}, "
           f"max_steps={args.max_steps}\n{header}\n" + "-" * len(header))
 
@@ -272,7 +316,15 @@ def main():
             side = "blue" if team == 0 else "red"
             print(fmt_row(f"{side}_policy vs {opp_name}", res, team, args.n_units))
 
-    # 3) reference: what a deathball looks like
+    # 3) ablation: the same policy denied its commander macro block
+    #    (off-distribution observations: all-zero phase one-hot)
+    res = run_matchup(env, {0: ("ppo-nomacro", ai.policies),
+                            1: ("scripted", "blob")},
+                      args.episodes, args.seed + 5150, formations)
+    print(fmt_row("[ablation] blue_policy nomacro vs blob", res, 0,
+                  args.n_units))
+
+    # 4) reference: what a deathball looks like
     print("-" * len(header))
     res = run_matchup(env, {0: ("scripted", "blob"), 1: ("scripted", "line")},
                       args.episodes, args.seed + 999, formations)
@@ -286,7 +338,9 @@ def main():
         "  spacing/allies60/hull-u: a stacked deathball scores ~0 spacing,\n"
         "  high allies60, low hull/u; formed teams keep spacing and room.\n"
         "  flank%: share of hits earned from outside the target's facing\n"
-        "  arc (maneuver quality). Reference rows show the blob baseline."
+        "  arc (maneuver quality). Reference rows show the blob baseline.\n"
+        "  slot_d: mean distance to the live slot target during advance\n"
+        "  (commander factions only; '-' = no macro context sampled)."
     )
 
 

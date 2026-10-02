@@ -136,9 +136,7 @@ class PPO:
         obs = np.concatenate([t.obs for t in trajectories], axis=0)
         actions = np.concatenate([t.actions for t in trajectories]).astype(np.int64)
         old_logp = np.concatenate([t.logps for t in trajectories])
-        advs, rets = zip(
-            *(compute_gae(t, self.p.gamma, self.p.lam) for t in trajectories)
-        )
+        advs, rets = zip(*(compute_gae(t, self.p.gamma, self.p.lam) for t in trajectories))
         adv = np.concatenate(advs)
         ret = np.concatenate(rets)
 
@@ -152,27 +150,18 @@ class PPO:
         ret_t = torch.as_tensor(ret, dtype=torch.float32, device=self.device)
 
         N = obs_t.shape[0]
-        stats = {
-            "pi_loss": 0.0,
-            "v_loss": 0.0,
-            "entropy": 0.0,
-            "approx_kl": 0.0,
-            "clip_frac": 0.0,
-            "n_updates": 0,
-            "n_samples": N,
-        }
+        stats = {"pi_loss": 0.0, "v_loss": 0.0, "entropy": 0.0, "approx_kl": 0.0,
+                 "clip_frac": 0.0, "n_updates": 0, "n_samples": N}
         mb = min(self.p.minibatch_size, N)
 
         for _ in range(self.p.epochs):
             perm = torch.randperm(N, device=self.device)
             for start in range(0, N, mb):
-                idx = perm[start : start + mb]
+                idx = perm[start:start + mb]
                 logits, value = self.model(obs_t[idx])
                 dist = torch.distributions.Categorical(logits=logits)
                 logp = dist.log_prob(actions_t[idx])
 
-                # adv_b > 0: (1-clip)*adv_b <= min(surr1, surr2) <= (1+clip)*adv_b
-                # adv_b < 0 and abs(ratio-1) > clip: min(surr1, surr2) = ratio * adv_b
                 ratio = (logp - old_logp_t[idx]).exp()
                 adv_b = adv_t[idx]
                 surr1 = ratio * adv_b
