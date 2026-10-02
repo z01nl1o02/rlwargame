@@ -9,8 +9,13 @@ import random
 # "scatter" is the legacy uniform-random deployment; the rest place units
 # on deterministic slot grids (see BattleSimulator._formation_slots).
 FORMATION_NAMES = (
-    "scatter", "line", "column", "wedge",
-    "echelon_l", "echelon_r", "crescent",
+    "scatter",
+    "line",
+    "column",
+    "wedge",
+    "echelon_l",
+    "echelon_r",
+    "crescent",
 )
 
 
@@ -45,8 +50,10 @@ class BattleConfig:
     formation_jitter: float = 6.0
 
     def __post_init__(self):
-        for field, value in (("blue_formation", self.blue_formation),
-                             ("red_formation", self.red_formation)):
+        for field, value in (
+            ("blue_formation", self.blue_formation),
+            ("red_formation", self.red_formation),
+        ):
             if value not in FORMATION_NAMES:
                 raise ValueError(
                     f"{field}={value!r} is not a formation;"
@@ -126,8 +133,7 @@ class BattleSimulator:
         for team, prefix, facing in ((0, "B", 0.0), (1, "R", math.pi)):
             formation = self.cfg.blue_formation if team == 0 else self.cfg.red_formation
             slots = (
-                self._formation_slots(formation, n)
-                if formation != "scatter" else None
+                self._formation_slots(formation, n) if formation != "scatter" else None
             )
             for i in range(n):
                 if slots is None:
@@ -136,7 +142,9 @@ class BattleSimulator:
                         x = self.rng.uniform(80, 300)
                         y = self.rng.uniform(80, self.cfg.world_h - 80)
                     else:
-                        x = self.rng.uniform(self.cfg.world_w - 300, self.cfg.world_w - 80)
+                        x = self.rng.uniform(
+                            self.cfg.world_w - 300, self.cfg.world_w - 80
+                        )
                         y = self.rng.uniform(80, self.cfg.world_h - 80)
                     heading = self.rng.uniform(-math.pi, math.pi)
                 else:
@@ -200,10 +208,12 @@ class BattleSimulator:
             per = max(2, int(per_rank * 0.6))
             for i in range(n):
                 r, c = divmod(i, per)
-                slots.append((
-                    -(r * s * 0.8 + c * s * 0.3),
-                    (c - (per - 1) / 2) * s - side * r * s,
-                ))
+                slots.append(
+                    (
+                        -(r * s * 0.8 + c * s * 0.3),
+                        (c - (per - 1) / 2) * s - side * r * s,
+                    )
+                )
         elif formation == "crescent":
             # Concave bowl opening toward the enemy: the center is the
             # rearmost point, the horns reach forward to envelop anything
@@ -221,7 +231,8 @@ class BattleSimulator:
 
     def living(self, team: int | None = None):
         return [
-            u for u in self.units.values()
+            u
+            for u in self.units.values()
             if u.alive and (team is None or u.team == team)
         ]
 
@@ -230,7 +241,7 @@ class BattleSimulator:
             candidates = self.living(1 - unit.team)
         if not candidates:
             return None
-        return min(candidates, key=lambda e: (e.x-unit.x)**2 + (e.y-unit.y)**2)
+        return min(candidates, key=lambda e: (e.x - unit.x) ** 2 + (e.y - unit.y) ** 2)
 
     def _clamp_world(self, unit: Unit):
         unit.x = max(5.0, min(self.cfg.world_w - 5.0, unit.x))
@@ -254,8 +265,7 @@ class BattleSimulator:
         discipline and turning to face threats (movement updates heading).
         """
         ang = math.atan2(attacker.y - target.y, attacker.x - target.x)
-        rel = math.atan2(math.sin(ang - target.heading),
-                         math.cos(ang - target.heading))
+        rel = math.atan2(math.sin(ang - target.heading), math.cos(ang - target.heading))
         return abs(rel) > math.radians(self.cfg.flank_arc_deg)
 
     def _combat(self):
@@ -320,12 +330,14 @@ class BattleSimulator:
                 if target.hp <= 0 and target.alive:
                     target.hp = 0.0
                     target.alive = False
-                    self.events.append({
-                        "type": "destroyed",
-                        "t": self.time,
-                        "unit": target.id,
-                        "by": unit.id,
-                    })
+                    self.events.append(
+                        {
+                            "type": "destroyed",
+                            "t": self.time,
+                            "unit": target.id,
+                            "by": unit.id,
+                        }
+                    )
 
     def step(self, actions: Dict[str, int] | None = None):
         actions = actions or {}
@@ -344,13 +356,13 @@ class BattleSimulator:
                 else:
                     angle = math.atan2(target.y - unit.y, target.x - unit.x)
                     # Quantize the angle into the 8 movement directions.
-                    dirs = [
-                        (0, 0), (0, -math.pi/2), (math.pi/4),
-                        (0, math.pi/2), (math.pi*3/4), (math.pi,),
-                        (-math.pi*3/4), (-math.pi/2), (-math.pi/4)
-                    ]
+                    # dirs = [
+                    #    (0, 0), (0, -math.pi/2), (math.pi/4),
+                    #    (0, math.pi/2), (math.pi*3/4), (math.pi,),
+                    #    (-math.pi*3/4), (-math.pi/2), (-math.pi/4)
+                    # ]
                     # Easier direct quantization:
-                    sector = int(round((angle + math.pi/2) / (math.pi/4))) % 8
+                    sector = int(round((angle + math.pi / 2) / (math.pi / 4))) % 8
                     action = [0, 1, 2, 3, 4, 5, 6, 7, 8][sector + 1]
 
             self._move(unit, action)

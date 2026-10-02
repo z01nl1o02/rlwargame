@@ -45,9 +45,9 @@ from war_sim.scripted import SCRIPTED_POLICIES
 
 N_UNITS_PER_SIDE = 50
 MAX_STEPS = 600
-N_ENVS = 2            # independent battles collected per iteration
+N_ENVS = 2  # independent battles collected per iteration
 SEED = 42
-LEAGUE_PROB = 0.5     # chance an episode is league (vs scripted) play
+LEAGUE_PROB = 0.5  # chance an episode is league (vs scripted) play
 CHECKPOINT_DIR = os.environ.get("WAR_CHECKPOINT_DIR", "./checkpoints/war_100")
 
 # Deployment formations sampled per team per episode (curriculum variety).
@@ -118,7 +118,9 @@ def run_episode(
         if env.episode_done:
             for a, o in obs.items():
                 if a in trajectories and a not in dead:
-                    trajectories[a].bootstrap_value = policies[team_of(a)].model.value(o)
+                    trajectories[a].bootstrap_value = policies[team_of(a)].model.value(
+                        o
+                    )
 
     blue, red = env.alive_counts()
     winner = 0 if (red == 0 and blue > 0) else (1 if (blue == 0 and red > 0) else -1)
@@ -142,17 +144,27 @@ def run_episode(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PPO training for the war simulator")
-    p.add_argument("--iters", type=int,
-                   default=int(os.environ.get("WAR_TRAIN_ITERS", "50")),
-                   help="training iterations (env: WAR_TRAIN_ITERS)")
-    p.add_argument("--envs", type=int, default=N_ENVS,
-                   help="battles collected per iteration")
-    p.add_argument("--n-units", type=int, default=N_UNITS_PER_SIDE,
-                   help="units per side")
-    p.add_argument("--max-steps", type=int, default=MAX_STEPS,
-                   help="step limit per episode")
-    p.add_argument("--league-prob", type=float, default=LEAGUE_PROB,
-                   help="probability an episode is played vs a scripted opponent")
+    p.add_argument(
+        "--iters",
+        type=int,
+        default=int(os.environ.get("WAR_TRAIN_ITERS", "50")),
+        help="training iterations (env: WAR_TRAIN_ITERS)",
+    )
+    p.add_argument(
+        "--envs", type=int, default=N_ENVS, help="battles collected per iteration"
+    )
+    p.add_argument(
+        "--n-units", type=int, default=N_UNITS_PER_SIDE, help="units per side"
+    )
+    p.add_argument(
+        "--max-steps", type=int, default=MAX_STEPS, help="step limit per episode"
+    )
+    p.add_argument(
+        "--league-prob",
+        type=float,
+        default=LEAGUE_PROB,
+        help="probability an episode is played vs a scripted opponent",
+    )
     p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--checkpoint-dir", default=CHECKPOINT_DIR)
     return p.parse_args()
@@ -206,7 +218,8 @@ def main():
                 rng.choice(FORMATION_POOL),
             )
             ep_trajs, s = run_episode(
-                env, policies,
+                env,
+                policies,
                 seed=rng.randrange(2**31),
                 formations=formations,
                 opponent_name=opponent_name,
@@ -217,7 +230,8 @@ def main():
                 agent_steps += len(t)
             ep_stats.append(s)
             matchups.append(
-                "self" if opponent_name is None
+                "self"
+                if opponent_name is None
                 else f"{opponent_name}@{'BR'[opponent_team]}"
             )
             wins[s["winner"]] += 1
@@ -226,17 +240,20 @@ def main():
                 learner = 1 - opponent_team
                 row = league[opponent_name]
                 row[0 if s["winner"] == learner else 1 if s["winner"] >= 0 else 2] += 1
-        
-        #upd = {team: policies[team].update(trajs[team]) for team in (0, 1)}
-        # FIXBUG: 如果某一次迭代里,3 局全部是 league 局、且脚本对手恰好都坐在同一队,那么另一队整轮 0 条轨迹 
+        # upd = {team: policies[team].update(trajs[team]) for team in (0, 1)}
+        # FIXBUG: 如果某一次迭代里,3 局全部是 league 局、且脚本对手恰好都坐在同一队,那么另一队整轮 0 条轨迹
         #          → np.concatenate([]) → ValueError: need at least one array to concatenate。
         upd = {}
-        for team in (0,1):
+        for team in (0, 1):
             if trajs[team]:
                 upd[team] = policies[team].update(trajs[team])
             else:
-                upd[team] = {"approx_kl":0.0, "entropy":0.0,
-                             "pi_loss": 0.0, "v_loss": 0.0}
+                upd[team] = {
+                    "approx_kl": 0.0,
+                    "entropy": 0.0,
+                    "pi_loss": 0.0,
+                    "v_loss": 0.0,
+                }
         wall = time.perf_counter() - t0
 
         blue_ret = float(np.mean([s["blue_return"] for s in ep_stats]))
@@ -257,16 +274,15 @@ def main():
             flush=True,
         )
         if (it + 1) % 10 == 0:
-            table = " ".join(
-                f"{n}:{w}/{l}/{d}" for n, (w, l, d) in league.items()
-            )
+            table = " ".join(f"{n}:{w}/{l}/{d}" for n, (w, l, d) in league.items())
             print(f"        league (W/L/D vs scripted): {table}", flush=True)
             save_checkpoints()
 
     save_checkpoints()
     for team, name in ((0, "blue_policy"), (1, "red_policy")):
-        print(f"checkpoint saved to "
-              f"{os.path.join(args.checkpoint_dir, f'{name}.pt')}")
+        print(
+            f"checkpoint saved to " f"{os.path.join(args.checkpoint_dir, f'{name}.pt')}"
+        )
 
 
 if __name__ == "__main__":

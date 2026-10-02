@@ -82,10 +82,7 @@ class ScriptedPolicy:
         foes = sim.living(1 - team)
         if not mine or not foes:
             return {}
-        return {
-            u.id: self.unit_action(sim, u, mine, foes, team)
-            for u in mine
-        }
+        return {u.id: self.unit_action(sim, u, mine, foes, team) for u in mine}
 
     def unit_action(self, sim, unit, mine, foes, team: int) -> int:
         raise NotImplementedError
@@ -101,6 +98,7 @@ class Hold(ScriptedPolicy):
 class BlobRush(ScriptedPolicy):
     """Deathball: everyone charges the enemy centroid. The strategy the
     anti-blob work is measured against."""
+
     name = "blob"
 
     def unit_action(self, sim, unit, mine, foes, team):
@@ -111,13 +109,17 @@ class BlobRush(ScriptedPolicy):
 class LineAdvance(ScriptedPolicy):
     """Advance as a loose front line: close to firing range, then hold,
     while keeping some distance from the nearest teammate."""
+
     name = "line"
 
     def unit_action(self, sim, unit, mine, foes, team):
         cx, cy = _centroid(foes)
         foe = _nearest(unit, foes)
         dx, dy = 0.0, 0.0
-        if foe is None or math.hypot(foe.x - unit.x, foe.y - unit.y) > sim.cfg.weapon_range * 0.95:
+        if (
+            foe is None
+            or math.hypot(foe.x - unit.x, foe.y - unit.y) > sim.cfg.weapon_range * 0.95
+        ):
             dx += cx - unit.x
             dy += cy - unit.y
         mate = _nearest(unit, [m for m in mine if m is not unit])
@@ -141,6 +143,7 @@ class FlankWings(ScriptedPolicy):
     would flip back to "sweep" as soon as a wing leaves the waypoint
     zone to converge, locking it into a limit cycle that never engages
     (verified: eternal 146px standoff at a map wall)."""
+
     name = "flank"
 
     def act(self, env: WarEnv, team: int) -> Dict[str, int]:
@@ -155,23 +158,23 @@ class FlankWings(ScriptedPolicy):
         wings = {}
         for edge_y, wing in ((50.0, top), (sim.cfg.world_h - 50.0, bottom)):
             swept = bool(wing) and (
-                (sum(m.x for m in wing) / len(wing) - cx)
-                * (1.0 if team == 0 else -1.0) > -50.0
-            )
+                (sum(m.x for m in wing) / len(wing) - cx) * (1.0 if team == 0 else -1.0)
+                > -50.0
+            )  # team==0是blue，初始位置在左侧，对手red初始位置在右侧，上述条件才可以用来判断是否达成包围条件
             wings[edge_y] = swept
         both_swept = all(wings.values())
         return {
-            u.id: self.unit_action(sim, u, mine, foes, team, cx, cy,
-                                   wings, both_swept)
+            u.id: self.unit_action(sim, u, mine, foes, team, cx, cy, wings, both_swept)
             for u in mine
         }
 
-    def unit_action(self, sim, unit, mine, foes, team,
-                    cx, cy, wings, both_swept):
+    def unit_action(self, sim, unit, mine, foes, team, cx, cy, wings, both_swept):
         cfg = sim.cfg
         dirx = 1.0 if team == 0 else -1.0  # which way "behind the enemy" is
         edge_y = 50.0 if unit.y < cfg.world_h / 2 else cfg.world_h - 50.0
-        wx = max(40.0, min(cfg.world_w - 40.0, cx + 150.0 * dirx))
+        wx = max(
+            40.0, min(cfg.world_w - 40.0, cx + 150.0 * dirx)
+        )  # 单个wing的waypoint的x坐标
         my_swept = wings[edge_y]
         foe = _nearest(unit, foes)
 
@@ -184,15 +187,12 @@ class FlankWings(ScriptedPolicy):
                 return dir_to_action(sim, foe.x - unit.x, foe.y - unit.y)
 
         if not my_swept:
-            tx, ty = wx, edge_y        # run to the sweep waypoint along my edge
+            tx, ty = wx, edge_y  # run to the sweep waypoint along my edge
         elif not both_swept:
-            tx, ty = cx, edge_y        # in position: shadow the enemy, wait
+            tx, ty = cx, edge_y  # in position: shadow the enemy, wait
         else:
-            tx, ty = cx, cy            # both wings ready: converge (pincer)
+            tx, ty = cx, cy  # both wings ready: converge (pincer)
         return dir_to_action(sim, tx - unit.x, ty - unit.y)
 
 
-SCRIPTED_POLICIES = {
-    p.name: p()
-    for p in (Hold, BlobRush, LineAdvance, FlankWings)
-}
+SCRIPTED_POLICIES = {p.name: p() for p in (Hold, BlobRush, LineAdvance, FlankWings)}
