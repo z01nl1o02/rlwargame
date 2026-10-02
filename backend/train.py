@@ -38,11 +38,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import random
 import time
 
 import numpy as np
 import torch
+
+from loguru import logger
 
 from war_sim.core import BattleConfig, FORMATION_NAMES
 from war_sim.commander import Commander
@@ -191,7 +194,7 @@ def main():
         torch.manual_seed(args.seed + team)  # independent weight init per faction
         policies[team] = PPO(OBS_DIM, N_ACTIONS, PPOParams(), device="cpu")
 
-    print(
+    logger.info(
         f"standalone PPO: {args.n_units} units/side, max_steps={args.max_steps}, "
         f"envs={args.envs}, iters={args.iters}, seed={args.seed}, "
         f"league_prob={args.league_prob}, obs_dim={OBS_DIM} (macro block incl.), "
@@ -262,6 +265,7 @@ def main():
         # nothing to learn from (latent bug, exposed by --envs 1).
         empty = {"pi_loss": 0.0, "v_loss": 0.0, "entropy": 0.0,
                  "approx_kl": 0.0, "clip_frac": 0.0}
+        # TODO: make ent_coef cool-down as training process
         upd = {
             team: (policies[team].update(trajs[team]) if trajs[team]
                    else dict(empty))
@@ -275,7 +279,7 @@ def main():
         ent = 0.5 * (upd[0]["entropy"] + upd[1]["entropy"])
         pi_loss = 0.5 * (upd[0]["pi_loss"] + upd[1]["pi_loss"])
         v_loss = 0.5 * (upd[0]["v_loss"] + upd[1]["v_loss"])
-        print(
+        logger.info(
             f"iter={it:03d} "
             f"blue_return={blue_ret:+8.2f} red_return={red_ret:+8.2f} "
             f"wins(B/R/draw)={wins[0]}/{wins[1]}/{wins[-1]} "
@@ -284,20 +288,38 @@ def main():
             f"pi_loss={pi_loss:+.3f} v_loss={v_loss:.3f} "
             f"ent={ent:.3f} kl={kl:.4f} "
             f"wall={wall:.1f}s",
-            flush=True,
         )
         if (it + 1) % 10 == 0:
             table = " ".join(
                 f"{n}:{w}/{l}/{d}" for n, (w, l, d) in league.items()
             )
-            print(f"        league (W/L/D vs scripted): {table}", flush=True)
+            logger.info(f"        league (W/L/D vs scripted): {table}")
             save_checkpoints()
 
     save_checkpoints()
     for team, name in ((0, "blue_policy"), (1, "red_policy")):
-        print(f"checkpoint saved to "
+        logger.info(f"checkpoint saved to "
               f"{os.path.join(args.checkpoint_dir, f'{name}.pt')}")
 
 
 if __name__ == "__main__":
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level="DEBUG",
+        format="<green>{time:HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        colorize=True
+    )
+    logger.add(
+        "logs/train.log",
+        level="INFO",
+        rotation="500 MB",       # 文件大小超过500MB时轮转
+        retention="10 days",     # 保留10天
+        compression="zip",       # 旧日志压缩为zip
+        enqueue=True,            # 启用异步队列，提升性能
+        serialize=True,          # 输出为JSON格式，便于ELK等工具分析
+        backtrace=True,          # 生产环境建议开启，方便排查复杂错误
+        diagnose=False           # 生产环境关闭diagnose，避免泄露敏感变量数据
+    )
+    logger.info("="*80)
     main()

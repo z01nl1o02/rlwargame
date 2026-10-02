@@ -77,7 +77,8 @@ MACRO_DIM = 3 + len(PHASES) + 1
 SHAPE_DIST_K = 0.5    # closing on the nearest enemy (cold-start signal)
 SPACE_K = 0.25        # opening distance from a too-close teammate
 SPACE_IDEAL = 30.0    # desired nearest-teammate distance (world units)
-PERSONAL_DMG_K = 0.002  # personal damage-dealt credit (flanking pays)
+PERSONAL_DMG_K = 0.02 #0.002  # personal damage-dealt credit (flanking pays), 增大,鼓励个体进攻,避免躺平
+TEAM_SIZE_K = 0.5 # 团队中人数变化带来的激励变化增益, 团队的奖励太多容易让个体躺平, 默认值2.0
 SLOT_K = 0.2          # closing on the commander slot (macro shaping)
 
 # Local-crowding observation: allies within this radius (world units).
@@ -404,6 +405,10 @@ class WarEnv:
         dmg_before = {
             a: self.sim.damage_by_unit.get(a, 0.0) for a in active
         }
+        
+        hp_before = {
+            a : self.sim.units[a].hp for a in active
+        }
 
         # Macro context (option C): slot targets as seen when the units
         # chose their actions. The slot potential is only collected
@@ -461,14 +466,18 @@ class WarEnv:
             u = self.sim.units[a]
             team = u.team
             enemy = 1 - team
-            r = (before_alive[enemy] - after_alive[enemy]) * 2.0
-            r -= (before_alive[team] - after_alive[team]) * 2.0
+            r = (before_alive[enemy] - after_alive[enemy]) * TEAM_SIZE_K
+            r -= (before_alive[team] - after_alive[team]) * TEAM_SIZE_K
             r += (self.sim.damage_by_team[team] - before_damage[team]) * 0.001
             r += (self.sim.damage_by_unit.get(a, 0.0) - dmg_before[a]) * PERSONAL_DMG_K
+            r += (self.sim.units[a].hp - hp_before[a]) * 0.01 # 对hp降低的个体施加惩罚, 避免个体冒进
             if u.alive:
                 d_after = dist_to_nearest_enemy(u, living_after[enemy])
                 nn_after = dist_to_nearest_teammate(u, living_after[team])
                 r += SHAPE_DIST_K * (d_before[a] - d_after)
+                # 鼓励队友之间的距离保持在SPACE_IDEAL之外, 避免抱团, spacing_potential <=0 
+                # 如果超出 SPACE_IDEAL,则spacing_potential为0
+                # 如果小于SPACE_IDEAL, 越靠近spacing_potenial越小
                 r += SPACE_K * (spacing_potential(nn_after)
                                 - spacing_potential(nn_before[a]))
                 # Slot potential (option C): alive units only, engage
@@ -494,6 +503,15 @@ class WarEnv:
             self.episode_done = True
             # Terminal observation for every unit that acted this final step.
             obs = self._observations(active, include_dead=True)
+            hp_blue = sum([u.hp for u in self.sim.units.values() if u.alive and u.team == 0])
+            hp_red = sum([u.hp for u in self.sim.units.values() if u.alive and u.team == 0])
+            for a in active:
+                u = self.sim.units[a]
+                #结束时以hp作为最终激励,避免"对峙"情况
+                if u.team == 0:
+                    rewards[a] += (hp_blue - hp_red)/u.max_hp * 0.1 
+                else:
+                    rewards[a] -= (hp_blue - hp_red)/u.max_hp * 0.1
         else:
             obs = self._observations(active)
 

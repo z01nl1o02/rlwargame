@@ -50,6 +50,7 @@ import numpy as np
 from war_sim.core import BattleConfig, FORMATION_NAMES
 from war_sim.commander import Commander
 from war_sim.env import WarEnv
+from war_sim.ppo import PPO
 from war_sim.recorder import ReplayRecorder
 from war_sim.runtime import PolicyRuntime, team_of
 from war_sim.scripted import SCRIPTED_POLICIES
@@ -201,7 +202,9 @@ def play_episode(
     return winner, blue, red
 
 
-def run_matchup(env, controllers, n_episodes, base_seed, formations=None):
+def run_matchup(env, controllers: dict[int, dict[str, str | dict[int,PPO]]], 
+                n_episodes, base_seed, 
+                formations: None | tuple[str, str] = None):
     rng = random.Random(base_seed)
     wins = {0: 0, 1: 0, -1: 0}
     alive = {t: [] for t in controllers}
