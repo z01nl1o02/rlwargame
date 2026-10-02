@@ -143,7 +143,6 @@ func _notification(what: int) -> void:
 		_layout()
 
 
-
 func _layout() -> void:
 	if stats_panel == null:
 		return  # _ready 完成前根 Control 就可能收到 RESIZED 通知，此时子控件尚未创建

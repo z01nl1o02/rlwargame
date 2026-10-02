@@ -93,7 +93,7 @@ func _draw_chart(rect: Rect2, title: String, a: PackedFloat32Array, b: PackedFlo
 	var plot := Rect2(rect.position + Vector2(10.0, fs + 22.0), rect.size - Vector2(20.0, fs + 42.0))
 	if plot.size.x < 10.0 or plot.size.y < 10.0:
 		return
-	var stride := maxi(1, int(float(_n) / (plot.size.x * 2.0))) # step size to resample a/b fed in
+	var stride := maxi(1, int(float(_n) / (plot.size.x * 2.0)))
 	var pa := PackedVector2Array()
 	var pb := PackedVector2Array()
 	var i := 0
