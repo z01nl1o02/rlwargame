@@ -18,9 +18,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import numpy as np
-
-from .env import OBS_DIM
+from .core import BattleConfig
+from .env import ObsSpec, collate, obs_spec_for
 from .ppo import PPO
 
 # (team, checkpoint stem) -- must match train.py's checkpoint names.
@@ -47,11 +46,15 @@ class PolicyRuntime:
         self,
         checkpoint_dir: str | os.PathLike | None = None,
         device: str = "cpu",
+        expected_spec: ObsSpec | None = None,
     ):
         self.checkpoint_dir = (
             Path(checkpoint_dir) if checkpoint_dir else default_checkpoint_dir()
         )
         self.device = device
+        # What the serving env produces (default BattleConfig shape);
+        # checkpoints trained for another spec are refused explicitly.
+        self.expected_spec = expected_spec or obs_spec_for(BattleConfig())
         self.policies: dict[int, PPO] = {}
 
     @property
@@ -61,10 +64,12 @@ class PolicyRuntime:
     def load(self) -> dict:
         """(Re)load checkpoints from disk. Never raises; returns a status.
 
-        Checkpoints whose observation dimension does not match the
-        current WarEnv construction are refused explicitly (old-format
-        files must fail loudly per checkpoint, not mis-read silently):
-        the affected faction falls back to the engine default behavior."""
+        Checkpoints that do not match the current observation contract
+        are refused explicitly (old-format files must fail loudly per
+        checkpoint, not mis-read silently): legacy flat-vector files
+        (predating option D) and files trained for a different ObsSpec
+        both degrade to the engine default behavior with a clear error.
+        """
         self.policies.clear()
         errors: dict[str, str] = {}
         for team, name in TEAM_POLICIES:
@@ -74,16 +79,16 @@ class PolicyRuntime:
                 continue
             try:
                 ppo = PPO.load(str(path), device=self.device)
-                if ppo.obs_dim != OBS_DIM:
-                    errors[name] = (
-                        f"obs_dim {ppo.obs_dim} != current {OBS_DIM}: "
-                        "checkpoint predates the macro observation block "
-                        "(option C); retrain before serving"
-                    )
-                    continue
-                self.policies[team] = ppo
-            except Exception as exc:  # corrupted / incompatible file
+            except Exception as exc:  # legacy / corrupted / incompatible
                 errors[name] = repr(exc)
+                continue
+            if ppo.spec != self.expected_spec:
+                errors[name] = (
+                    f"obs spec {ppo.spec} != serving {self.expected_spec}: "
+                    "checkpoint trained for a different observation format"
+                )
+                continue
+            self.policies[team] = ppo
         return {
             "checkpoint_dir": str(self.checkpoint_dir),
             "loaded": [name for t, name in TEAM_POLICIES if t in self.policies],
@@ -92,7 +97,7 @@ class PolicyRuntime:
         }
 
     def act(
-        self, obs: dict[str, np.ndarray], deterministic: bool = True
+        self, obs: dict, deterministic: bool = True
     ) -> dict[str, int]:
         """Actions for the given observations (one batched forward per
         faction). Agents whose faction has no loaded policy get no entry,
@@ -102,7 +107,7 @@ class PolicyRuntime:
             ids = [a for a in obs if team_of(a) == team]
             if not ids:
                 continue
-            batch = np.stack([obs[a] for a in ids])
+            batch = collate([obs[a] for a in ids])
             acts, _, _ = ppo.model.act(batch, deterministic=deterministic)
             for i, a in enumerate(ids):
                 actions[a] = int(acts[i])

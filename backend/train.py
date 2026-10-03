@@ -46,8 +46,8 @@ import torch
 
 from war_sim.core import BattleConfig, FORMATION_NAMES
 from war_sim.commander import Commander
-from war_sim.env import N_ACTIONS, OBS_DIM, WarEnv
-from war_sim.ppo import PPO, PPOParams, Trajectory
+from war_sim.env import N_ACTIONS, WarEnv, collate
+from war_sim.ppo import ARCHS, PPO, PPOParams, Trajectory
 from war_sim.scripted import SCRIPTED_POLICIES
 
 N_UNITS_PER_SIDE = 50
@@ -109,7 +109,7 @@ def run_episode(
                 for a in ids:
                     actions[a] = int(opp_actions.get(a, 0))
                 continue
-            batch = np.stack([obs[a] for a in ids])
+            batch = collate([obs[a] for a in ids])
             acts, logps, values = policies[team].model.act(batch, deterministic)
             for i, a in enumerate(ids):
                 actions[a] = int(acts[i])
@@ -172,6 +172,10 @@ def parse_args() -> argparse.Namespace:
                    help="step limit per episode")
     p.add_argument("--league-prob", type=float, default=LEAGUE_PROB,
                    help="probability an episode is played vs a scripted opponent")
+    p.add_argument("--arch", default="deepsets", choices=ARCHS,
+                   help="policy network architecture (option D; "
+                        "mlp = flattened-set baseline for controlled "
+                        "comparisons)")
     p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--checkpoint-dir", default=CHECKPOINT_DIR)
     return p.parse_args()
@@ -186,15 +190,19 @@ def main():
 
     cfg = BattleConfig(n_units_per_side=args.n_units, max_steps=args.max_steps)
     envs = [WarEnv(cfg, seed=args.seed + k) for k in range(args.envs)]
+    spec = envs[0].obs_spec
     policies = {}
     for team in (0, 1):
         torch.manual_seed(args.seed + team)  # independent weight init per faction
-        policies[team] = PPO(OBS_DIM, N_ACTIONS, PPOParams(), device="cpu")
+        policies[team] = PPO(spec, N_ACTIONS, PPOParams(), device="cpu",
+                             arch=args.arch)
 
     print(
         f"standalone PPO: {args.n_units} units/side, max_steps={args.max_steps}, "
         f"envs={args.envs}, iters={args.iters}, seed={args.seed}, "
-        f"league_prob={args.league_prob}, obs_dim={OBS_DIM} (macro block incl.), "
+        f"league_prob={args.league_prob}, arch={args.arch}, "
+        f"obs spec={spec} (self={spec.self_dim}, rel={spec.rel_dim}, "
+        f"U={spec.max_units}), "
         f"doctrines sampled from {COMMANDER_POOL}"
     )
 

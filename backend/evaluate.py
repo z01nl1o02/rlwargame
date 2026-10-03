@@ -49,7 +49,7 @@ import numpy as np
 
 from war_sim.core import BattleConfig, FORMATION_NAMES
 from war_sim.commander import Commander
-from war_sim.env import WarEnv
+from war_sim.env import WarEnv, collate
 from war_sim.recorder import ReplayRecorder
 from war_sim.runtime import PolicyRuntime, team_of
 from war_sim.scripted import SCRIPTED_POLICIES
@@ -169,7 +169,7 @@ def play_episode(
                 for a in ids:
                     actions[a] = int(opp.get(a, 0))
             else:
-                batch = np.stack([obs[a] for a in ids])
+                batch = collate([obs[a] for a in ids])
                 acts, _, _ = ctrl[team].model.act(batch, deterministic=True)
                 for i, a in enumerate(ids):
                     actions[a] = int(acts[i])
@@ -272,7 +272,7 @@ def main():
     status = ai.load()
     assert status["ready"], f"checkpoints not ready: {status['errors']}"
     print(f"checkpoints: {args.checkpoint_dir} "
-          f"(blue+red loaded, obs_dim from files)")
+          f"(blue+red loaded, arch/spec from files)")
 
     formations = None
     if args.formation:
