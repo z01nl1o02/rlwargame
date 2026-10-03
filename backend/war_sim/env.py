@@ -76,7 +76,7 @@ MACRO_DIM = 3 + len(PHASES) + 1
 # episode, so none of them can be farmed by oscillating back and forth).
 SHAPE_DIST_K = 0.5    # closing on the nearest enemy (cold-start signal)
 SPACE_K = 0.25        # opening distance from a too-close teammate
-SPACE_IDEAL = 30.0    # desired nearest-teammate distance (world units)
+SPACE_IDEAL_RATIO = 1.0    # desired nearest-teammate distance wrt 'formation_spacing  (world units)
 PERSONAL_DMG_K = 0.02 #0.002  # personal damage-dealt credit (flanking pays), 增大,鼓励个体进攻,避免躺平
 TEAM_SIZE_K = 0.5 # 团队中人数变化带来的激励变化增益, 团队的奖励太多容易让个体躺平, 默认值2.0
 SLOT_K = 0.2          # closing on the commander slot (macro shaping)
@@ -383,11 +383,20 @@ class WarEnv:
                     best = d2
             return None if best is None else best ** 0.5
 
-        def spacing_potential(d: float | None) -> float:
-            """0.0 at/above SPACE_IDEAL, down to -1.0 when stacked."""
-            if d is None:
+        def spacing_potential(d: float | None, ideal_d0: float, ideal_d1: float) -> float:
+            """
+            d < ideal_d0 时, d 越小,返回的值越小(负数),最小值 -1
+            ideal_d0 <= d <= ideal_d1 时, 返回 0
+            d > ideal_d1 时, d 越大,返回的值越小(负数), 最小值 -1 ( d >= 2 * ideal_d1 )
+            """
+            if d is None or ideal_d0 <= d <= ideal_d1:
                 return 0.0
-            return -max(0.0, 1.0 - d / SPACE_IDEAL)
+            if d < ideal_d0:
+                return -max(0.0, 1.0 - d / ideal_d0) 
+            
+            return max(-1.0,  -(d - ideal_d1) / ideal_d1) 
+
+
 
         d_before = {
             a: dist_to_nearest_enemy(
@@ -475,11 +484,11 @@ class WarEnv:
                 d_after = dist_to_nearest_enemy(u, living_after[enemy])
                 nn_after = dist_to_nearest_teammate(u, living_after[team])
                 r += SHAPE_DIST_K * (d_before[a] - d_after)
-                # 鼓励队友之间的距离保持在SPACE_IDEAL之外, 避免抱团, spacing_potential <=0 
-                # 如果超出 SPACE_IDEAL,则spacing_potential为0
-                # 如果小于SPACE_IDEAL, 越靠近spacing_potenial越小
-                r += SPACE_K * (spacing_potential(nn_after)
-                                - spacing_potential(nn_before[a]))
+                # 鼓励队友之间的距离保持合适的位置, 避免过近或过远, spacing_potential <=0 
+                ideal_d0 = self.cfg.formation_spacing  - self.cfg.formation_jitter * SPACE_IDEAL_RATIO
+                ideal_d1 = self.cfg.formation_spacing + self.cfg.formation_jitter * SPACE_IDEAL_RATIO
+                r += SPACE_K * (spacing_potential(nn_after, ideal_d0, ideal_d1 )
+                                - spacing_potential(nn_before[a], ideal_d0, ideal_d1))
                 # Slot potential (option C): alive units only, engage
                 # phase excluded (see slot_d_before), phase transitions
                 # excluded (slot positions jump grid <-> ring).

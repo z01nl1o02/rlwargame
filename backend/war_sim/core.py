@@ -46,7 +46,7 @@ class BattleConfig:
     # --- scripted initial deployment -----------------------------------
     blue_formation: str = "scatter"
     red_formation: str = "scatter"
-    formation_spacing: float = 26.0
+    formation_spacing: float = 26.0 # 初始阵型 个体之间的距离基准
     formation_jitter: float = 6.0
 
     def __post_init__(self):
@@ -349,11 +349,11 @@ class BattleSimulator:
                 else:
                     angle = math.atan2(target.y - unit.y, target.x - unit.x)
                     # Quantize the angle into the 8 movement directions.
-                    dirs = [
-                        (0, 0), (0, -math.pi/2), (math.pi/4),
-                        (0, math.pi/2), (math.pi*3/4), (math.pi,),
-                        (-math.pi*3/4), (-math.pi/2), (-math.pi/4)
-                    ]
+                    #dirs = [
+                    #    (0, 0), (0, -math.pi/2), (math.pi/4),
+                    #    (0, math.pi/2), (math.pi*3/4), (math.pi,),
+                    #    (-math.pi*3/4), (-math.pi/2), (-math.pi/4)
+                    #]
                     # Easier direct quantization:
                     sector = int(round((angle + math.pi/2) / (math.pi/4))) % 8
                     action = [0, 1, 2, 3, 4, 5, 6, 7, 8][sector + 1]
